@@ -72,8 +72,7 @@ static void DeleteWC24ChannelDownloadA(uint64_t titleID) {
 
 int main(void) {
 	puts(
-		"WiiLink Clear Tool v1.0\n"
-		"NOT based off RC24 clear tool....\n" );
+		"WiiConnect24 cleartool v1.0\n" );
 
 	puts("Reloading & patching IOS, please wait...\n");
 	bool patch_ok = patch_ahbprot_reset() && patch_isfs_permissions();

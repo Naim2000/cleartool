@@ -1,81 +1,178 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <gccore.h>
 
 #include "video.h"
 #include "pad.h"
 #include "libpatcher/libpatcher.h"
 
-struct option {
+typedef const struct option {
 	const char* name;
-	bool selected;
-};
+	const char* description;
+	uint32_t titleID;
+	const char* const fileNames[5];
+} Option;
 
-static bool SelectOptionsMenu(struct option options[]) {
-	int cnt = 0, index = 0, curX = 0, curY = 0;
-	while (options[++cnt].name)
-		;
+#define NBR_OPTIONS 4
+static Option ClearToolOptions[NBR_OPTIONS] =
+{
+	{
+		.name = "Forecast Channel data",
+		.description =
+		"This will delete the data last downloaded by the Forecast Channel.\n"
+		"Generally does not fix FORE000006.\n\n"
 
-	CON_GetPosition(&curX, &curY);
+		"Deleting this data usually resolves:\n"
+		"	* FORE000001\n"
+		"	* FORE000003\n"
+		"	* FORE000005 (..?)\n"
+		"	* FORE000099\n"
+		"	* Discontinuation message/Similar custom text messages\n",
 
-	for (;;) {
-		struct option* opt = options + index;
+		.titleID = 0x48414600
+	},
+	{
+		.name = "News Channel data",
+		.description =
+		"This will delete the data last downloaded by the News Channel.\n"
+		"Generally does not fix NEWS000006.\n\n"
 
-		printf("\x1b[%i;%iH", curY, curX);
-		for (int i = 0; i < cnt; i++)
-			printf("%s%s	%s\x1b[40m\x1b[39m\n", i == index? ">>" : "  ",
-												   options[i].selected? "\x1b[47;1m\x1b[30m" : "", options[i].name);
+		"Deleting this data usually resolves:\n"
+		"	* NEWS000001\n"
+		"	* NEWS000003\n"
+		"	* NEWS000005 (..?)\n"
+		"	* NEWS000099\n"
+		"	* Discontinuation message/Similar custom text messages\n",
 
-		for (;;) {
-			scanpads();
-			uint32_t buttons = buttons_down(0);
+		.titleID = 0x48414700
+	},
+	{
+		.name = "WiiConnect24 mailboxes",
+		.description =
+		"This will delete the incoming/outcoming mailboxes for WiiConnect24 Messages.\n"
+		"(This does not mean messages on the Wii Message Board itself!)\n\n"
 
-			if (buttons & WPAD_BUTTON_DOWN) {
-				if (++index == cnt) index = 0;
-				break;
-			}
-			else if (buttons & WPAD_BUTTON_UP) {
-				if (--index < 0) index = cnt - 1;
-				break;
-			}
+		"Solves 109106, and may solve issues with sending/receiving mail.\n\n"
 
-			else if (buttons & WPAD_BUTTON_A) { opt->selected ^= true; break; }
-			else if (buttons & WPAD_BUTTON_PLUS) return true;
-			else if (buttons & (WPAD_BUTTON_B | WPAD_BUTTON_HOME)) return false;
+		"The Wii Menu will automatically recreate these files, then state that\n"
+		"the Wii Message Board Data is corrupted. This is perfectly normal.\n",
+
+		.fileNames = {
+			"/shared2/wc24/mbox/wc24recv.ctl",
+			"/shared2/wc24/mbox/wc24recv.mbx",
+			"/shared2/wc24/mbox/wc24send.ctl",
+			"/shared2/wc24/mbox/wc24send.mbx",
+			NULL
+		}
+	},
+	{
+		.name = "WiiConnect24 Message server config",
+		.description =
+		"This will delete the WiiConnect24 message server config file (nwc24msg.cfg),\n"
+		"Used to store the URLs and login credentials for the mail server. (And your Wii number.)\n"
+
+		"The Wii Menu will automatically recreate this file, then state that\n"
+		"the Wii Message Board Data is corrupted. This is perfectly normal.\n\n"
+
+		"Please note that you will have to run the Mail patcher again.\n",
+
+		.fileNames = {
+			"/shared2/wc24/nwc24msg.cbk",
+			"/shared2/wc24/nwc24msg.cfg",
+			NULL
 		}
 	}
-}
+};
 
 static void DeleteFile(const char* filepath) {
 	printf("	>> %s... ", filepath);
 	int ret = ISFS_Delete(filepath);
 
-	if (ret < 0) printf("Failed! (%i)\n", ret);
+	if (ret == -106) puts("Not found.");
+	else if (ret < 0) printf("Failed! (%i)\n", ret);
 	else puts("OK!");
 }
 
-static void DeleteWC24ChannelDownload(uint64_t titleID) {
-	static char filepath[ISFS_MAXPATH];
+static void DeleteWC24ChannelDownload(uint32_t titleID) {
+	char filepath[ISFS_MAXPATH];
 
-	sprintf(filepath, "/title/%08x/%08x/data/wc24dl.vff", (uint32_t)(titleID >> 32), (uint32_t)(titleID & 0xFFFFFFFF));
+	sprintf(filepath, "/title/00010002/%08x/data/wc24dl.vff", titleID);
 	DeleteFile(filepath);
 }
 
 /* Why is this guy making 2 morbillion subroutines? */
-static void DeleteWC24ChannelDownloadA(uint64_t titleID) {
+static void DeleteWC24ChannelDownloadA(uint32_t titleID) {
 	titleID &= ~0xFF;
 
+	DeleteWC24ChannelDownload(titleID | 'J');
 	DeleteWC24ChannelDownload(titleID | 'E');
 	DeleteWC24ChannelDownload(titleID | 'P');
-	DeleteWC24ChannelDownload(titleID | 'J');
+}
+
+static void DeleteWC24Data(Option* opt) {
+	if (opt->titleID) DeleteWC24ChannelDownloadA(opt->titleID);
+	else
+		for (const char* const* file = opt->fileNames; *file; file++)
+			DeleteFile(*file);
+
+}
+
+static void DeleteWC24DataMenu() {
+	int index = 0, curX = 0, curY = 0;
+	bool ready = false;
+	Option* selected = NULL;
+
+	CON_GetPosition(&curX, &curY);
+
+	for (int i = 0; i < NBR_OPTIONS; i++)
+		printf("  	%s\n", ClearToolOptions[i].name);
+
+
+	while (!ready) {
+		printf("\x1b[%i;0H", curY);
+		for (int i = 0; i < NBR_OPTIONS; i++)
+			printf("%s	%s\n", (index == i) ? ">>" : "  ", ClearToolOptions[i].name);
+
+		uint32_t button = wait_button(WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_DOWN | WPAD_BUTTON_UP | WPAD_BUTTON_HOME);
+		switch (button) {
+			case WPAD_BUTTON_DOWN:
+				if (++index == NBR_OPTIONS) index = 0;
+				break;
+
+			case WPAD_BUTTON_UP:
+				if (--index < 0) index = NBR_OPTIONS - 1;
+				break;
+
+			case WPAD_BUTTON_A:
+				selected = ClearToolOptions + index;
+
+			case WPAD_BUTTON_B:
+			case WPAD_BUTTON_HOME:
+				ready = true;
+				break;
+
+		}
+	}
+
+	if (selected) {
+		putchar('\n');
+		puts(selected->description);
+		usleep(5000000);
+		puts("Are you sure you want to delete this?\n\n"
+
+			 "Press + to confirm.\n"
+			 "Press any other button to cancel.");
+
+		if (wait_button(0) & WPAD_BUTTON_PLUS) DeleteWC24Data(selected);
+	}
 }
 
 int main(void) {
-	puts(
-		"WiiConnect24 cleartool v1.0\n" );
+	puts("WiiConnect24 cleartool v1.0");
 
 	puts("Reloading & patching IOS, please wait...\n");
-	bool patch_ok = patch_ahbprot_reset() && patch_isfs_permissions();
+	bool patch_ok = (patch_ahbprot_reset() && patch_isfs_permissions());
 
 	// Still want the user's Wii remote to connect
 	initpads();
@@ -84,49 +181,16 @@ int main(void) {
 
 	ISFS_Initialize();
 
-	static struct option ClearToolOptions[5] = {
-		{ "Forecast Channel data" },
-		{ "News Channel data" },
-		{ "WiiConnect24 mailboxes" },
-		{ "WiiConnect24 Message server config" }
-	};
 
-	puts(
-		"Select what you would like to delete.\n"
-		"Press A to select an item.\n"
-		"Press + to begin deleting.\n" );
+	puts("Select what you would like to delete.\n");
 
-	if (!SelectOptionsMenu(ClearToolOptions)) goto exit;
-
-	if (ClearToolOptions[0].selected) {
-		puts("Deleting Forecast Channel data...");
-		DeleteWC24ChannelDownloadA(0x0001000248414600LL); // I forgot LL here and it got past somehow. gcc is wonderful
-	}
-
-	if (ClearToolOptions[1].selected) {
-		puts("Deleting News Channel data...");
-		DeleteWC24ChannelDownloadA(0x0001000248414700LL);
-	}
-
-	if (ClearToolOptions[2].selected) {
-		puts("Deleting WiiConnect24 mailboxes...");
-		DeleteFile("/shared2/wc24/mbox/wc24recv.ctl");
-		DeleteFile("/shared2/wc24/mbox/wc24recv.mbx");
-		DeleteFile("/shared2/wc24/mbox/wc24send.ctl");
-		DeleteFile("/shared2/wc24/mbox/wc24send.mbx");
-	}
-
-	if (ClearToolOptions[3].selected) {
-		puts("Deleting WiiConnect24 Message server config...");
-		DeleteFile("/shared2/wc24/nwc24msg.cbk");
-		DeleteFile("/shared2/wc24/nwc24msg.cfg");
-	}
+	DeleteWC24DataMenu(ClearToolOptions);
 
 exit:
-	puts("Press HOME to exit.");
+	puts("\nPress HOME to exit.");
 	wait_button(WPAD_BUTTON_HOME);
 
-	printf("Failed to launch the Wii menu..!? (%i)\n", WII_LaunchTitle(0x100000002LL));
-	sleep(3);
+//	printf("Failed to launch the Wii menu..!? (%i)\n", WII_LaunchTitle(0x100000002LL));
+//	usleep(3000000);
 	return 0;
 }

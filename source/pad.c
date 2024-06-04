@@ -47,10 +47,12 @@ void stoppads() {
 	WPAD_Shutdown();
 }
 
-void wait_button(uint32_t button) {
+uint32_t wait_button(uint32_t button) {
 	scanpads();
 	while (!(pad_buttons & (button? button : ~0)) )
 		scanpads();
+
+	return pad_buttons;
 }
 
 uint32_t buttons_down(uint32_t button) {
